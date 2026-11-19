@@ -1,0 +1,71 @@
+# systemd unit for an MIT-only dbos==3.6.0 service.  NOT executed in the audit sandbox (no systemd
+# as PID 1); syntax checked with `systemd-analyze verify`.  The environment controls below are
+# the systemd equivalent of deploy/dbos-launch, which WAS tested (HARDENING.md control 5).
+[Unit]
+Description=myapp (DBOS workflows)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=myapp
+Group=myapp
+WorkingDirectory=/opt/myapp
+
+# systemd services start from a minimal environment (not the admin's shell), but drop-ins,
+# DefaultEnvironment= in system.conf, EnvironmentFile= and PassEnvironment= can add to it.
+# Do not use EnvironmentFile=/PassEnvironment= for this unit; state everything here.
+Environment=APP_VERSION=2026.11.1
+Environment=APP_EXECUTOR_ID=%H
+Environment=APP_DBOS_DB_URL_FILE=%d/db_url
+# Belt and braces: explicitly unset the dangerous names even if a drop-in or the manager
+# default environment sets them (UnsetEnvironment= takes exact names, no wildcards).
+UnsetEnvironment=DBOS__CLOUD DBOS__APPVERSION DBOS__VMID DBOS__APPID DBOS__CONDUCTOR_KEY DBOS__CONDUCTOR_URL DBOS__CONDUCTOR_APP_NAME DBOS__OTLP_TRACES_ENDPOINT DBOS__OTLP_LOGS_ENDPOINT
+UnsetEnvironment=DBOS_DOMAIN DBOS_APP_NAME DBOS_SYSTEM_DATABASE_URL DBOS_DATABASE_URL
+UnsetEnvironment=PGHOST PGHOSTADDR PGPORT PGDATABASE PGUSER PGPASSWORD PGPASSFILE PGSERVICE PGSERVICEFILE PGSYSCONFDIR PGOPTIONS PGAPPNAME PGCLIENTENCODING PGCONNECT_TIMEOUT PGTARGETSESSIONATTRS PGLOADBALANCEHOSTS
+UnsetEnvironment=PGSSLMODE PGREQUIRESSL PGSSLCERT PGSSLKEY PGSSLROOTCERT PGSSLCRL PGSSLCRLDIR PGSSLSNI PGSSLCERTMODE PGSSLNEGOTIATION PGSSLMINPROTOCOLVERSION PGSSLMAXPROTOCOLVERSION PGSSLCOMPRESSION PGSSLKEYLOGFILE PGCHANNELBINDING PGREQUIREAUTH PGGSSENCMODE PGGSSLIB PGGSSDELEGATION PGKRBSRVNAME PGREQUIREPEER
+UnsetEnvironment=OPENSSL_CONF OPENSSL_MODULES OPENSSL_ENGINES OPENSSL_ia32cap SSL_CERT_FILE SSL_CERT_DIR SSLKEYLOGFILE
+UnsetEnvironment=KRB5_CONFIG KRB5CCNAME KRB5_KTNAME KRB5_TRACE KRB5RCACHEDIR LDAPCONF LDAPRC LDAPNOINIT SASL_PATH SASL_CONF_PATH
+UnsetEnvironment=OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_TRACES_ENDPOINT OTEL_EXPORTER_OTLP_LOGS_ENDPOINT OTEL_EXPORTER_OTLP_HEADERS OTEL_SERVICE_NAME OTEL_RESOURCE_ATTRIBUTES
+UnsetEnvironment=HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy
+UnsetEnvironment=LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT PYTHONPATH PYTHONSTARTUP PYTHONHOME PYTHONUSERBASE PYTHONINSPECT PYTHONBREAKPOINT
+
+# The database URL (with password) is a credential file, not an environment variable.
+LoadCredential=db_url:/etc/myapp/secrets/db_url
+
+# The wrapper is still used: it enforces the allow-list whatever the unit environment is,
+# and dbos_hardening.preimport() scrubs once more in-process.
+# (-B: no .pyc writes; PYTHON* variables are refused by dbos-launch, so use interpreter flags.)
+ExecStart=/opt/myapp/deploy/dbos-launch -- /opt/myapp/venv/bin/python -B -m myapp
+
+# Shutdown: SIGTERM -> the app calls DBOS.destroy(workflow_completion_timeout_sec=20).
+KillSignal=SIGTERM
+TimeoutStopSec=40
+KillMode=mixed
+Restart=on-failure
+RestartSec=5
+
+# Egress allow-list: the database only (control 7).  DNS only if the URL uses a host name.
+IPAddressDeny=any
+IPAddressAllow=10.20.30.40/32
+# IPAddressAllow=10.20.0.53/32     # resolver, if needed
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Generic sandboxing (not exercised in the audit sandbox; MemoryDenyWriteExecute= is deliberately
+# omitted: pure-Python psycopg calls libpq through ctypes/libffi, which was not tested under it)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+ReadOnlyPaths=/opt/myapp
+
+[Install]
+WantedBy=multi-user.target

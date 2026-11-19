@@ -1,0 +1,8 @@
+# pip constraints for an MIT-only DBOS deployment.  Use with EVERY pip invocation in the build:
+#   pip install -c constraints-mit-only.txt ...
+# An impossible version makes any resolution that would pull the proprietary package fail
+# instead of silently installing it (e.g. via the `dbos[enterprise]` extra or a transitive dep).
+dbos-enterprise<0.dev0
+# psycopg must stay pure-Python on the audited system libpq: never the bundled-binary wheels.
+psycopg-binary<0.dev0
+psycopg-c<0.dev0

@@ -1,0 +1,9 @@
+# pg_hba.conf lines for the DBOS roles -- place ABOVE any broader "host all all ..." rule.
+# Replace 10.20.30.0/24 with the application subnet (tested with 127.0.0.1/32).
+# TYPE     DATABASE   USER                                    ADDRESS          METHOD
+hostssl    dbos_app   dbos_runtime,dbos_pruner                10.20.30.0/24    scram-sha-256
+hostssl    dbos_app   dbos_migrator                           10.20.30.0/24    scram-sha-256
+# Everything else for these roles is refused: other databases, other networks, and any
+# non-TLS connection (so a client-side sslmode downgrade cannot succeed).
+host       all        dbos_runtime,dbos_pruner,dbos_migrator  all              reject
+local      all        dbos_runtime,dbos_pruner,dbos_migrator                   reject

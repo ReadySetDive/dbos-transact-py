@@ -1,0 +1,33 @@
+# Container example for an MIT-only dbos==3.6.0 service.
+# NOT built in the audit sandbox (no Docker daemon).  Every RUN step below was executed by hand
+# in a venv during the audit; the ENTRYPOINT wrapper is the tested deploy/dbos-launch.
+FROM python:3.13-slim-bookworm@sha256:<pin-the-digest-you-reviewed>
+
+# System libpq: psycopg 3.3.9 runs in pure-Python mode on it (no bundled libpq/OpenSSL wheel).
+# The audit ran on libpq 16.15; libpq >= 16 is needed for require_auth=.  bookworm ships libpq 15:
+# take libpq5 16.x from the PGDG apt repository, or drop require_auth and rely on verify-full.
+RUN apt-get update && apt-get install -y --no-install-recommends libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/myapp
+COPY requirements-min.lock.txt constraints-mit-only.txt verify_install.py ./
+RUN python -m venv /opt/myapp/venv \
+    && /opt/myapp/venv/bin/pip install --no-cache-dir --require-hashes --no-deps --only-binary=:all: \
+         -c constraints-mit-only.txt -r requirements-min.lock.txt \
+    && /opt/myapp/venv/bin/python -I verify_install.py --lock requirements-min.lock.txt
+# ^ the build FAILS if the installed dbos differs from the genuine 3.6.0 wheel, or if
+#   dbos-enterprise / psycopg-binary / opentelemetry / any .pth file is present.
+
+COPY dbos_hardening.py json_serializer.py deploy/dbos-launch ./
+COPY myapp ./myapp
+RUN useradd --system --no-create-home myapp
+USER myapp
+
+# No ENV for anything in the DBOS__*/DBOS_*/PG*/OTEL_* families.  The wrapper drops whatever
+# `docker run -e`, compose `environment:` or a Kubernetes pod spec injects, except APP_*.
+ENTRYPOINT ["/opt/myapp/dbos-launch", "--", "/opt/myapp/venv/bin/python", "-B", "-m", "myapp"]
+
+# Run with:  --read-only  --cap-drop=ALL  --security-opt=no-new-privileges
+#            -e APP_VERSION=2026.11.1 -e APP_EXECUTOR_ID=<stable id> -e APP_DBOS_DB_URL_FILE=/run/secrets/db_url
+#            --mount type=secret / a Kubernetes Secret volume for db_url and the CA certificate
+# and a NetworkPolicy / firewall rule that allows egress to the database address only.

@@ -1,0 +1,79 @@
+#!/bin/sh
+# dbos-launch: start a DBOS application with a clean, allow-listed environment.
+#
+#   dbos-launch [-k NAME]... [-e NAME=VALUE]... -- command [args...]
+#
+# The child receives ONLY:
+#   * a fixed baseline: PATH (reset), HOME, USER, LOGNAME, LANG, LC_ALL, TZ, TMPDIR
+#   * variables whose names start with APP_            (the application's own namespace)
+#   * variables named with -k                          (explicit pass-through)
+#   * variables set with -e
+# Everything else is dropped -- in particular DBOS__* (DBOS__CLOUD, DBOS__CONDUCTOR_*,
+# DBOS__OTLP_*, DBOS__APPVERSION, DBOS__VMID, DBOS__APPID), DBOS_DOMAIN, DBOS_APP_NAME,
+# DBOS_SYSTEM_DATABASE_URL, PG* (libpq), OPENSSL_*, SSL_CERT_*, KRB5*, LDAP*, SASL_*, OTEL_*,
+# *_PROXY, LD_*, PYTHON*.
+# -k and -e REFUSE names in those families, so the wrapper cannot be used to re-introduce them.
+# Tested with dbos==3.6.0 (HARDENING.md, control 5).
+set -eu
+
+deny() {
+    case "$1" in
+        DBOS__*|DBOS_DOMAIN|DBOS_APP_NAME|DBOS_SYSTEM_DATABASE_URL|DBOS_DATABASE_URL) return 0 ;;
+        PG*|OPENSSL_*|SSL_CERT_*|SSLKEYLOGFILE|KRB5*|LDAP*|SASL_*|OTEL_*|GSS*) return 0 ;;
+        LD_*|PYTHON*) return 0 ;;
+        *_PROXY|*_proxy|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE) return 0 ;;
+    esac
+    return 1
+}
+
+set_args=""
+keep=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -k) deny "$2" && { echo "dbos-launch: refusing to pass through $2" >&2; exit 64; }
+            keep="$keep $2"; shift 2 ;;
+        -e) n=${2%%=*}
+            deny "$n" && { echo "dbos-launch: refusing to set $n" >&2; exit 64; }
+            case "$2" in *"
+"*) echo "dbos-launch: newline in -e value" >&2; exit 64 ;; esac
+            set_args="$set_args
+$2"; shift 2 ;;
+        --) shift; break ;;
+        *)  echo "usage: dbos-launch [-k NAME]... [-e NAME=VALUE]... -- command [args...]" >&2; exit 64 ;;
+    esac
+done
+[ $# -gt 0 ] || { echo "dbos-launch: no command" >&2; exit 64; }
+
+# Build the new environment as positional parameters for env(1): NAME=VALUE ... command args
+n_cmd=$#
+# baseline
+for v in HOME USER LOGNAME LANG LC_ALL TZ TMPDIR $keep; do
+    eval "isset=\${$v+x}"
+    if [ -n "$isset" ]; then
+        eval "val=\${$v}"
+        set -- "$@" "$v=$val"
+    fi
+done
+# APP_* namespace (names only from the environment listing; values read by name)
+for v in $(env | sed -n 's/^\(APP_[A-Za-z0-9_]*\)=.*/\1/p' | sort -u); do
+    eval "val=\${$v}"
+    set -- "$@" "$v=$val"
+done
+# explicit -e assignments
+OLDIFS=$IFS
+IFS='
+'
+for kv in $set_args; do
+    [ -n "$kv" ] && set -- "$@" "$kv"
+done
+IFS=$OLDIFS
+set -- "$@" "PATH=/usr/local/bin:/usr/bin:/bin"
+
+# rotate: move the original command (first n_cmd params) behind the assignments
+i=0
+while [ $i -lt $n_cmd ]; do
+    first=$1; shift
+    set -- "$@" "$first"
+    i=$((i + 1))
+done
+exec env -i "$@"
